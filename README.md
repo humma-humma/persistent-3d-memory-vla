@@ -1,5 +1,7 @@
 # Persistent 3D Scene Memory for Vision-Language-Action Policies
 
+![3D Memory x VLA portfolio banner](assets/portfolio/github_social_preview.png)
+
 A research prototype connecting multi-view 3D reconstruction, confidence-aware
 scene memory, and [SmolVLA](https://huggingface.co/lerobot/smolvla_base) control
 in RoboCasa.
