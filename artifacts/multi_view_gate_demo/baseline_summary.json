@@ -1,0 +1,32 @@
+{
+  "current_rgb": {
+    "action_error": 0.6470663907752688,
+    "memory_position_error": 0.11358652255999245,
+    "confidence_brier": 0.08307234411393542,
+    "availability": 0.5746753246753248
+  },
+  "short_history": {
+    "action_error": 0.47813160642153746,
+    "memory_position_error": 0.16643052580728543,
+    "confidence_brier": 0.14388725525069646,
+    "availability": 0.7662337662337663
+  },
+  "persistent_no_gating": {
+    "action_error": 0.197712658749541,
+    "memory_position_error": 0.197712658749541,
+    "confidence_brier": 0.29358738225957165,
+    "availability": 1.0
+  },
+  "confidence_aware": {
+    "action_error": 0.18100042414783887,
+    "memory_position_error": 0.18100042414783887,
+    "confidence_brier": 0.19758737311644683,
+    "availability": 1.0
+  },
+  "multi_view_consistency": {
+    "action_error": 0.19970498682986404,
+    "memory_position_error": 0.19970498682986404,
+    "confidence_brier": 0.1230557763475482,
+    "availability": 1.0
+  }
+}

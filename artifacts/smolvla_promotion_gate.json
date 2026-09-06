@@ -1,0 +1,58 @@
+{
+  "episodes": [
+    0,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "anchors": [
+    0,
+    50,
+    100
+  ],
+  "target_actions": 900,
+  "metrics": {
+    "mae": {
+      "base": 15.50765961609505,
+      "adapted": 9.776370581300169,
+      "hold_state": 7.9785784986504815,
+      "improvement_vs_base": 0.3695779490056969,
+      "improvement_vs_hold_state": -0.22532736664228734
+    },
+    "rmse": {
+      "base": 22.484583096039103,
+      "adapted": 13.454528686170288,
+      "hold_state": 11.33061906748148,
+      "improvement_vs_base": 0.4016109336472222,
+      "improvement_vs_hold_state": -0.18744868272770387
+    },
+    "normalized_rmse": {
+      "base": 0.9318172653316634,
+      "adapted": 0.675598852618522,
+      "hold_state": 0.538610117094579,
+      "improvement_vs_base": 0.2749663718904641,
+      "improvement_vs_hold_state": -0.25433747190435363
+    }
+  },
+  "episode_wins": {
+    "mae": {
+      "adapted_better_than_base": 6,
+      "adapted_better_than_hold_state": 0,
+      "episode_count": 6
+    },
+    "rmse": {
+      "adapted_better_than_base": 6,
+      "adapted_better_than_hold_state": 1,
+      "episode_count": 6
+    },
+    "normalized_rmse": {
+      "adapted_better_than_base": 6,
+      "adapted_better_than_hold_state": 1,
+      "episode_count": 6
+    }
+  },
+  "promotion_passed": false,
+  "promotion_rule": "Adapted aggregate RMSE and normalized RMSE must beat both base and hold-state."
+}

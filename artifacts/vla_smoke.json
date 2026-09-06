@@ -1,0 +1,23 @@
+{
+  "backend": "mock",
+  "image_shape": [
+    224,
+    224,
+    3
+  ],
+  "geometry_shape": [
+    8,
+    7
+  ],
+  "prompt": "Move the gripper to the red block.\nWorld-aligned scene memory: red block at (0.420, -0.080, 0.030), confidence 0.90.",
+  "action": [
+    0.42,
+    -0.08,
+    0.03,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "status": "ok"
+}

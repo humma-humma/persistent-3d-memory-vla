@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmolVLA policy gate</title>
+<style>
+:root { color-scheme: dark; --bg:#0b1020; --panel:#131a2d; --muted:#9aa8c2; --text:#edf2ff; --line:#27314b; }
+* { box-sizing:border-box }
+body { margin:0; font:15px/1.45 system-ui,sans-serif; background:radial-gradient(circle at top,#18213b 0,var(--bg) 45%); color:var(--text) }
+main { max-width:1180px; margin:auto; padding:32px 22px 48px }
+.top { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; flex-wrap:wrap }
+h1 { margin:0 0 5px; font-size:clamp(25px,4vw,40px) }
+.subtitle,.note { color:var(--muted) }
+.badge { padding:8px 13px; border:1px solid #ff758f; color:#ff9aad; background:#3b1723; border-radius:999px; font-weight:700 }
+.cards { display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:12px; margin:25px 0 }
+.card,.panel { background:color-mix(in srgb,var(--panel) 92%,transparent); border:1px solid var(--line); border-radius:14px; box-shadow:0 16px 40px #0004 }
+.card { padding:17px } .card span { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em }
+.card strong { display:block; margin-top:6px; font-size:25px }
+.panel { padding:20px; margin-top:14px }
+.panel-head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap }
+h2 { margin:0; font-size:18px }
+select { color:var(--text); background:#1c2741; border:1px solid #405071; border-radius:8px; padding:8px 11px }
+.legend { display:flex; flex-wrap:wrap; gap:15px; margin:16px 0 3px; color:var(--muted); font-size:13px }
+.dot { width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:6px }
+.chart { min-height:270px; display:flex; align-items:flex-end; gap:18px; padding:28px 10px 10px; border-bottom:1px solid var(--line) }
+.group { flex:1; min-width:80px; height:235px; display:flex; align-items:flex-end; justify-content:center; gap:5px; position:relative; padding-bottom:34px }
+.bar { width:min(42px,22%); min-height:2px; border-radius:7px 7px 2px 2px; position:relative; transition:height .35s ease,filter .2s }
+.bar:hover { filter:brightness(1.25) }
+.bar b { position:absolute; width:70px; left:50%; transform:translateX(-50%); top:-23px; font-size:11px; text-align:center }
+.group-label { position:absolute; bottom:4px; left:0; right:0; color:var(--muted); text-align:center; font-size:12px }
+.explain { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:14px }
+.callout { padding:15px; border-left:3px solid #9b6cff; background:#171d33; border-radius:7px }
+@media(max-width:720px) { .cards { grid-template-columns:1fr 1fr } .explain { grid-template-columns:1fr } .chart { overflow-x:auto } .group { min-width:105px } }
+</style>
+</head>
+<body><main>
+<div class="top"><div><h1>SmolVLA policy gate</h1><div class="subtitle">Frozen held-out evaluation · 6 episodes · 900 predicted actions</div></div><div class="badge">Gate not passed</div></div>
+<section class="cards">
+ <div class="card"><span>Best policy RMSE</span><strong>12.1506</strong></div>
+ <div class="card"><span>Hold-state RMSE</span><strong>11.3306</strong></div>
+ <div class="card"><span>Gap to control</span><strong>+7.2%</strong></div>
+ <div class="card"><span>Episode RMSE wins</span><strong>2 / 6</strong></div>
+</section>
+<section class="panel"><div class="panel-head"><h2>Aggregate comparison</h2><select id="metric"><option value="rmse">RMSE</option><option value="normalized_rmse">Normalized RMSE</option><option value="mae">MAE</option></select></div><div class="legend" id="legend"></div><div class="chart" id="aggregate"></div></section>
+<section class="panel"><div class="panel-head"><h2>Episode-by-episode</h2><span class="note">Lower is better</span></div><div class="chart" id="episodes"></div></section>
+<div class="explain"><div class="callout"><strong>What improved</strong><br><span class="note">The residual policy cuts RMSE 46.0% relative to base SmolVLA.</span></div><div class="callout"><strong>Why fusion is still gated</strong><br><span class="note">It remains worse than hold-state in aggregate and wins only two episodes on RMSE.</span></div></div>
+</main>
+<script>
+const D={"labels":{"base":"Base SmolVLA","expert":"Expert adapted","residual":"Residual policy","hold":"Hold-state"},"colors":{"base":"#718096","expert":"#4f8cff","residual":"#9b6cff","hold":"#2dd4a7"},"metricNames":{"mae":"MAE","rmse":"RMSE","normalized_rmse":"Normalized RMSE"},"aggregate":{"base":{"mae":15.50765961609505,"rmse":22.484583096039103,"normalized_rmse":0.9318172653316634},"expert":{"mae":9.679656898732539,"rmse":13.64231852746952,"normalized_rmse":0.6335115084562336},"residual":{"mae":8.276255273618462,"rmse":12.15058419962972,"normalized_rmse":0.5557289347047119},"hold":{"mae":7.9785784986504815,"rmse":11.33061906748148,"normalized_rmse":0.538610117094579}},"episodes":{"0":{"base":{"mae":10.810972052680121,"rmse":15.80303821861674,"normalized_rmse":0.7106855529073156},"expert":{"mae":5.307087958918678,"rmse":8.456619552833645,"normalized_rmse":0.34188568361218663},"residual":{"mae":4.029406868735173,"rmse":6.749588632799178,"normalized_rmse":0.2891969481121692},"hold":{"mae":5.175890403721067,"rmse":8.25020870093001,"normalized_rmse":0.4923572356007812}},"11":{"base":{"mae":16.80951375994417,"rmse":23.415397838193346,"normalized_rmse":0.979099993734486},"expert":{"mae":10.54157233549489,"rmse":15.215432800494808,"normalized_rmse":0.7450670098971521},"residual":{"mae":9.33822349969986,"rmse":13.806181581042113,"normalized_rmse":0.6639720588919821},"hold":{"mae":7.953557785948117,"rmse":11.106731595133416,"normalized_rmse":0.5006031941961516}},"12":{"base":{"mae":15.564662966860666,"rmse":22.775310341573615,"normalized_rmse":0.9373390487333402},"expert":{"mae":9.592827823426989,"rmse":12.80700594026627,"normalized_rmse":0.600662055454331},"residual":{"mae":8.231090840933794,"rmse":12.093399535672575,"normalized_rmse":0.528629601393691},"hold":{"mae":8.142519327799478,"rmse":12.302585545308787,"normalized_rmse":0.5149713990207382}},"13":{"base":{"mae":14.065359142687583,"rmse":20.863816361095417,"normalized_rmse":0.850105075737785},"expert":{"mae":11.347668087681134,"rmse":15.795307680887982,"normalized_rmse":0.7241428930650371},"residual":{"mae":9.342507610408683,"rmse":13.96300632860711,"normalized_rmse":0.6194629897722812},"hold":{"mae":8.647852049469948,"rmse":12.161854910162047,"normalized_rmse":0.5717147796700778}},"14":{"base":{"mae":17.18876491102907,"rmse":24.78735963947882,"normalized_rmse":1.0080101845173113},"expert":{"mae":10.367076219386524,"rmse":15.042688638464838,"normalized_rmse":0.7145304395588102},"residual":{"mae":9.0637592006907,"rmse":13.360008598909772,"normalized_rmse":0.6419760637297441},"hold":{"mae":8.585314278271463,"rmse":11.773505975139008,"normalized_rmse":0.5814285869726601}},"15":{"base":{"mae":18.60668486336867,"rmse":27.262576177276685,"normalized_rmse":1.1056637363597417},"expert":{"mae":10.92170896748702,"rmse":14.536856551869576,"normalized_rmse":0.6747809691498846},"residual":{"mae":9.65254362124257,"rmse":12.93132052074756,"normalized_rmse":0.5911359463284037},"hold":{"mae":9.366337146692805,"rmse":12.388827678215618,"normalized_rmse":0.5705855071070648}}},"gate":{"episodes":[0,11,12,13,14,15],"anchors":[0,50,100],"target_actions":900,"metrics":{"mae":{"base":15.50765961609505,"adapted":8.276255273618462,"hold_state":7.9785784986504815,"improvement_vs_base":0.4663117789206101,"improvement_vs_hold_state":-0.03730950005923115},"rmse":{"base":22.484583096039103,"adapted":12.15058419962972,"hold_state":11.33061906748148,"improvement_vs_base":0.45960375837388007,"improvement_vs_hold_state":-0.07236719611389222},"normalized_rmse":{"base":0.9318172653316634,"adapted":0.5557289347047119,"hold_state":0.538610117094579,"improvement_vs_base":0.40360738593214385,"improvement_vs_hold_state":-0.03178331982042377}},"episode_wins":{"mae":{"adapted_better_than_base":6,"adapted_better_than_hold_state":1,"episode_count":6},"rmse":{"adapted_better_than_base":6,"adapted_better_than_hold_state":2,"episode_count":6},"normalized_rmse":{"adapted_better_than_base":6,"adapted_better_than_hold_state":1,"episode_count":6}},"promotion_passed":false,"adapted_model_key":"residual_blend","promotion_rule":"Adapted aggregate RMSE and normalized RMSE must beat both base and hold-state."}}; const order=['base','expert','residual','hold'];
+const legend=document.querySelector('#legend');
+legend.innerHTML=order.map(k=>`<span><i class="dot" style="background:${D.colors[k]}"></i>${D.labels[k]}</span>`).join('');
+function bars(container, groups, metric) {
+ const values=groups.flatMap(g=>order.map(k=>g.values[k][metric])); const max=Math.max(...values)*1.12;
+ container.innerHTML=groups.map(g=>`<div class="group">${order.map(k=>{const v=g.values[k][metric];return `<div class="bar" title="${D.labels[k]}: ${v.toFixed(4)}" style="height:${Math.max(2,v/max*190)}px;background:${D.colors[k]}"><b>${v.toFixed(metric==='normalized_rmse'?3:2)}</b></div>`}).join('')}<div class="group-label">${g.label}</div></div>`).join('');
+}
+function render() { const m=document.querySelector('#metric').value; bars(document.querySelector('#aggregate'),[{label:D.metricNames[m],values:D.aggregate}],m); bars(document.querySelector('#episodes'),Object.entries(D.episodes).map(([k,v])=>({label:'Episode '+k,values:v})),m); }
+document.querySelector('#metric').addEventListener('change',render); render();
+</script></body></html>

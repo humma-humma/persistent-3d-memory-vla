@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persistent-3d-scene-memory-vla"
+version = "0.2.0"
+description = "Confidence-aware persistent 3D scene memory for VLA policies."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23",
+    "opencv-python>=4.8,<4.12",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+evaluation = [
+    "trimesh>=3.23",
+    "rtree>=1.0",
+]
+visualization = ["matplotlib>=3.7"]
+open3d = ["open3d>=0.19"]
+learned = ["torch>=2.0", "torchvision>=0.15", "kornia>=0.7"]
+vla = ["torch>=2.0", "transformers>=4.40", "accelerate>=0.27", "sentencepiece>=0.1.99", "pillow>=9"]
+
+[project.scripts]
+sfm-reconstruct = "sfm_reconstruction.cli:main"
+sfm-visualize = "sfm_reconstruction.visualize:main"
+sfm-blender = "sfm_reconstruction.blender_viewer:main"
+sfm-open3d = "sfm_reconstruction.open3d_viewer:main"
+sfm-demo-video = "sfm_reconstruction.demo_video:main"
+sfm-dense-fuse = "sfm_reconstruction.dense_fusion:main"
+sfm-clean-cloud = "sfm_reconstruction.point_cloud_cleanup:main"
+sfm-stage3-setup = "sfm_reconstruction.stage3:main"
+sfm-stage3-plot = "sfm_reconstruction.stage3_visualize:main"
+sfm-stage3-open3d = "sfm_reconstruction.stage3_open3d_viewer:main"
+sfm-stage2-eval = "sfm_reconstruction.stage2_evaluation:main"
+sfm-stage1-eval = "sfm_reconstruction.stage1_evaluation:main"
+sfm-stage1-augment = "sfm_reconstruction.stage1_augmentation:main"
+scene-memory-demo = "persistent_scene_memory.benchmark:main"
+vla-smoke = "persistent_scene_memory.vla_smoke:main"
+smolvla-real-eval = "persistent_scene_memory.real_data_eval:main"
+smolvla-finetune-pilot = "persistent_scene_memory.fine_tune_pilot:main"
+smolvla-promotion = "persistent_scene_memory.promotion:main"
+reconstruction-to-memory = "persistent_scene_memory.reconstruction_bridge:main"
+memory-timeline-viewer = "persistent_scene_memory.memory_viewer:main"
+causal-scene-memory = "persistent_scene_memory.causal_mapping:main"
+robocasa-rollout = "persistent_scene_memory.robocasa_rollout:main"
+robocasa-rollout-viewer = "persistent_scene_memory.robocasa_rollout_viewer:main"
+robocasa-smolvla-replay = "persistent_scene_memory.robocasa_smolvla_replay:main"
+robocasa-smolvla-finetune = "persistent_scene_memory.robocasa_finetune:main"
+robocasa-smolvla-eval = "persistent_scene_memory.robocasa_policy_eval:main"
+robocasa-smolvla-server = "persistent_scene_memory.robocasa_policy_server:main"
+robocasa-smolvla-closed-loop = "persistent_scene_memory.robocasa_closed_loop:main"
+robocasa-official-import = "persistent_scene_memory.robocasa_official_import:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

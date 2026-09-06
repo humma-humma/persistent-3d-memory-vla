@@ -1,0 +1,26 @@
+{
+  "current_rgb": {
+    "action_error": 0.6229503346907818,
+    "memory_position_error": 0.07152915490205003,
+    "confidence_brier": 0.06302248673332743,
+    "availability": 0.5746753246753248
+  },
+  "short_history": {
+    "action_error": 0.42688507611245446,
+    "memory_position_error": 0.09290308652129309,
+    "confidence_brier": 0.10129568289913403,
+    "availability": 0.7662337662337663
+  },
+  "persistent_no_gating": {
+    "action_error": 0.2053674006520919,
+    "memory_position_error": 0.2053674006520919,
+    "confidence_brier": 0.2521963075818899,
+    "availability": 1.0
+  },
+  "confidence_aware": {
+    "action_error": 0.17479457350718788,
+    "memory_position_error": 0.17479457350718788,
+    "confidence_brier": 0.12174150189345495,
+    "availability": 1.0
+  }
+}
