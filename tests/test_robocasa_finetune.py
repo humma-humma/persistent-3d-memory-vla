@@ -1,11 +1,15 @@
 import numpy as np
 import pytest
 
+import persistent_scene_memory.robocasa_finetune as finetune
+
 from persistent_scene_memory.robocasa_finetune import (
     action_event_label,
     available_episode_anchors,
     dataset_statistics,
     episode_anchors,
+    episode_geometry,
+    episode_training_arrays,
     phase_balanced_example_order,
     selected_action_indices,
     validate_demonstrations,
@@ -107,6 +111,8 @@ def test_demonstration_validation_rejects_failure_and_duplicate_seed(tmp_path):
         validate_demonstrations([Episode(2, False, "failed")])
     with pytest.raises(ValueError, match="distinct identifiers"):
         validate_demonstrations([Episode(3, True, "a"), Episode(3, True, "b")])
+    labelled = validate_demonstrations([Episode(4, False, "dagger")], expert_labelled=[True])
+    assert labelled[0]["first_success_frame"] is None and labelled[0]["expert_labelled"]
 
 
 def test_demonstration_validation_accepts_official_source_ids(tmp_path):
@@ -121,3 +127,59 @@ def test_demonstration_validation_accepts_official_source_ids(tmp_path):
 
     assert record["seed"] is None
     assert record["demonstration_id"] == "official:episode_000007"
+
+
+def test_episode_geometry_is_object_minus_gripper_with_valid_flag():
+    class Episode:
+        root = "fake"
+        manifest = {
+            "frames": [
+                {"action_source": {"eef_world": [1.0, 0.0, 1.0], "object_world": [1.5, -0.25, 0.75]}},
+                {"action_source": {"eef_world": [0.0, 0.0, 0.0], "object_world": [0.0, 0.0, 0.0]}},
+            ]
+        }
+
+    geometry = episode_geometry(Episode())
+    assert geometry.shape == (2, 4)
+    assert np.allclose(geometry[0], [0.5, -0.25, -0.25, 1.0])
+    assert dataset_statistics(np.zeros((2, 20)), np.zeros((2, 12)))["observation.state"]["mean"].shape == (20,)
+    Episode.manifest = {"frames": [{"action_source": {}}]}
+    with pytest.raises(ValueError):
+        episode_geometry(Episode())
+
+
+def test_episode_training_arrays_cache_anchor_rgb_and_reuse_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(finetune, "robocasa_state16", lambda arrays: arrays["state"])
+    monkeypatch.setattr(finetune, "robocasa_action12", lambda arrays: arrays["action"])
+
+    class Episode:
+        root = tmp_path
+        manifest = {"cameras": ["a", "b"]}
+        reads = 0
+
+        def __len__(self):
+            return 4
+
+        def frame(self, index):
+            Episode.reads += 1
+            value = np.uint8(index)
+            return {
+                "arrays": {
+                    "state": np.full(16, index, dtype=np.float32),
+                    "action": np.full(12, index, dtype=np.float32),
+                    "rgb__a": np.full((2, 2, 3), value),
+                    "rgb__b": np.full((2, 2, 3), value + 10),
+                }
+            }
+
+    states, actions, rgb = episode_training_arrays(Episode(), [0, 2])
+    assert states.shape == (4, 16) and actions[3, 0] == 3
+    assert rgb.shape == (2, 2, 2, 2, 3)
+    assert rgb[1, 0, 0, 0, 0] == 2 and rgb[1, 1, 0, 0, 0] == 12
+    assert Episode.reads == 4
+
+    _, _, cached = episode_training_arrays(Episode(), [0, 2])
+    assert Episode.reads == 4 and np.array_equal(cached, rgb)
+    del rgb, cached  # Windows cannot replace a file that is still memory-mapped.
+    episode_training_arrays(Episode(), [0, 1])
+    assert Episode.reads == 8

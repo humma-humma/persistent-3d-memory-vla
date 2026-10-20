@@ -103,3 +103,43 @@ def test_rollout_diagnostics_measure_motion_and_modes():
     assert result["eef_relative_displacement"] == pytest.approx(2)
     assert result["gripper_close_fraction"] == pytest.approx(0.5)
     assert result["base_control_fraction"] == pytest.approx(1)
+
+
+def test_progress_summary_reports_reach_grasp_and_lift():
+    from persistent_scene_memory.robocasa_closed_loop import progress_summary
+
+    frames = [
+        {"action_source": {"eef_world": [0, 0, 1], "object_world": [0, 0, 0], "grasped": False}},
+        {"action_source": {"eef_world": [0, 0, 0.1], "object_world": [0, 0, 0], "grasped": True}},
+        {"action_source": {"eef_world": [0, 0, 0.4], "object_world": [0, 0, 0.3], "grasped": True}},
+    ]
+    summary = progress_summary(frames)
+    assert abs(summary["min_eef_object_distance"] - 0.1) < 1e-9
+    assert abs(summary["grasp_fraction"] - 2 / 3) < 1e-9
+    assert abs(summary["max_object_lift"] - 0.3) < 1e-9
+    assert progress_summary([{"action_source": {}}]) == {}
+
+
+def test_dagger_policy_records_oracle_label_and_mixes_execution():
+    from persistent_scene_memory.robocasa_closed_loop import DaggerPolicy
+
+    class Source:
+        def __init__(self, value):
+            self.value, self.calls, self.last_info = value, 0, {"phase": "approach_object"}
+
+        def act(self, env, frame_index, observation):
+            self.calls += 1
+            return {"a": self.value}
+
+        def close(self):
+            pass
+
+    for beta, executed in ((0.0, "policy"), (1.0, "oracle")):
+        remote, oracle = Source(0.0), Source(1.0)
+        dagger = DaggerPolicy(remote, oracle, beta=beta, seed=0)
+        for frame in range(25):
+            action = dagger.act(None, frame, {})
+            assert dagger.label_action == {"a": 1.0}
+            assert action == ({"a": 1.0} if executed == "oracle" else {"a": 0.0})
+        assert remote.calls == oracle.calls == 25
+        assert dagger.last_info["dagger_executor"] == executed

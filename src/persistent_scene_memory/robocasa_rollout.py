@@ -112,7 +112,9 @@ def record_episode(
         state_keys = sorted(key for key in observation if key.startswith("state."))
         for key in state_keys:
             arrays[f"state__{_slug(key)}"] = np.asarray(observation[key])
-        for key, value in sorted(action.items()):
+        # A DAgger wrapper executes one action but records an expert label instead.
+        recorded = getattr(action_fn, "label_action", None) or action
+        for key, value in sorted(recorded.items()):
             arrays[f"action__{_slug(key)}"] = np.asarray(value)
 
         filename = f"frame_{frame_index:06d}.npz"

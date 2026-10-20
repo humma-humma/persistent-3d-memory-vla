@@ -114,17 +114,85 @@ def load_episode_vectors(episode: RoboCasaEpisode) -> tuple[np.ndarray, np.ndarr
     return np.stack(states), np.stack(actions)
 
 
-def validate_demonstrations(episodes: list[RoboCasaEpisode]) -> list[dict]:
-    """Reject failed or duplicate-seed rollouts before policy training."""
+def episode_training_arrays(
+    episode: RoboCasaEpisode, anchors: list[int]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return states, actions, and memory-mapped anchor RGB [anchor, camera, H, W, 3].
+
+    Frame archives also hold depth and segmentation, so decoding them per training run
+    is slow and holding every anchor image in RAM does not fit larger DAgger sets. The
+    first call reads each frame once and writes `.npy` caches beside the episode; the
+    anchor file is written last and marks the cache complete.
+    """
+    paths = {
+        name: episode.root / f"train_cache_{name}.npy"
+        for name in ("states", "actions", "rgb", "anchors")
+    }
+    if paths["anchors"].exists() and np.array_equal(np.load(paths["anchors"]), anchors):
+        return (
+            np.load(paths["states"]),
+            np.load(paths["actions"]),
+            np.load(paths["rgb"], mmap_mode="r"),
+        )
+    for path in paths.values():
+        path.unlink(missing_ok=True)
+    cameras = episode.manifest["cameras"]
+    rows = {anchor: row for row, anchor in enumerate(anchors)}
+    states, actions, rgb = [], [], None
+    for index in range(len(episode)):
+        arrays = episode.frame(index)["arrays"]
+        states.append(robocasa_state16(arrays))
+        actions.append(robocasa_action12(arrays))
+        if index not in rows:
+            continue
+        images = np.stack([_image(arrays, camera) for camera in cameras])
+        if rgb is None:
+            rgb = np.lib.format.open_memmap(
+                paths["rgb"], mode="w+", dtype=np.uint8, shape=(len(anchors), *images.shape)
+            )
+        rgb[rows[index]] = images
+    rgb.flush()
+    del rgb
+    np.save(paths["states"], np.stack(states))
+    np.save(paths["actions"], np.stack(actions))
+    np.save(paths["anchors"], np.asarray(anchors))
+    return np.stack(states), np.stack(actions), np.load(paths["rgb"], mmap_mode="r")
+
+
+def episode_geometry(episode: RoboCasaEpisode) -> np.ndarray:
+    """Per-frame geometry state: object position relative to the gripper, plus a valid flag.
+
+    Training uses the recorded (privileged) object position; at evaluation the same
+    four values come from a memory estimate, so one checkpoint serves every update rule.
+    """
+    rows = []
+    for frame in episode.manifest["frames"]:
+        source = frame.get("action_source", {})
+        if "object_world" not in source or "eef_world" not in source:
+            raise ValueError(f"episode {episode.root} lacks recorded object and gripper positions")
+        relative = np.asarray(source["object_world"]) - np.asarray(source["eef_world"])
+        rows.append(np.r_[relative, 1.0])
+    return np.asarray(rows, dtype=np.float32)
+
+
+def validate_demonstrations(
+    episodes: list[RoboCasaEpisode], expert_labelled: list[bool] | None = None
+) -> list[dict]:
+    """Reject failed or duplicate-seed rollouts before policy training.
+
+    Episodes flagged in `expert_labelled` (DAgger rollouts, whose recorded actions are
+    oracle labels rather than what was executed) may fail the task.
+    """
     if not episodes:
         raise ValueError("at least one episode is required")
+    expert_labelled = expert_labelled or [False] * len(episodes)
     records = []
     identifiers = []
-    for episode in episodes:
+    for episode, labelled in zip(episodes, expert_labelled):
         successful_frames = [
             frame["frame_index"] for frame in episode.manifest["frames"] if frame.get("success")
         ]
-        if not successful_frames:
+        if not successful_frames and not labelled:
             raise ValueError(f"training episode has no successful frame: {episode.root}")
         seed = episode.manifest.get("seed")
         demonstration_id = episode.manifest.get("demonstration_id")
@@ -139,7 +207,8 @@ def validate_demonstrations(episodes: list[RoboCasaEpisode]) -> list[dict]:
                 "episode": str(episode.root.resolve()),
                 "seed": seed,
                 "demonstration_id": demonstration_id,
-                "first_success_frame": successful_frames[0],
+                "first_success_frame": successful_frames[0] if successful_frames else None,
+                "expert_labelled": labelled,
             }
         )
     if len(set(identifiers)) != len(identifiers):
@@ -151,8 +220,8 @@ def dataset_statistics(states: np.ndarray, actions: np.ndarray) -> dict:
     """Compute LeRobot mean/std/min/max statistics for native features."""
     states = np.asarray(states, dtype=np.float32)
     actions = np.asarray(actions, dtype=np.float32)
-    if states.ndim != 2 or states.shape[1] != 16:
-        raise ValueError("states must have shape [frames, 16]")
+    if states.ndim != 2 or states.shape[1] not in (16, 20):
+        raise ValueError("states must have shape [frames, 16] or [frames, 20]")
     if actions.ndim != 2 or actions.shape[1] != 12:
         raise ValueError("actions must have shape [frames, 12]")
 
@@ -168,6 +237,11 @@ def dataset_statistics(states: np.ndarray, actions: np.ndarray) -> dict:
         "observation.state": feature_stats(states),
         "action": feature_stats(actions),
     }
+
+
+def _frame_phase(frame: dict) -> str:
+    source = frame.get("action_source", {})
+    return source.get("phase") or source.get("oracle_phase") or "unknown"
 
 
 def _image(arrays: dict[str, np.ndarray], camera: str) -> np.ndarray:
@@ -190,6 +264,14 @@ def run_finetune(
     target_fields: list[str] | None = None,
     preserve_checkpoint_stats: bool = False,
     sampling_balance: str = "phase",
+    grad_accum: int = 1,
+    batch_size: int = 1,
+    warmup_steps: int = 0,
+    cosine_schedule: bool = False,
+    geometry_state: bool = False,
+    geometry_noise: float = 0.01,
+    geometry_dropout: float = 0.1,
+    dagger_episode_dirs: list[str | Path] | None = None,
 ) -> dict:
     """Fine-tune projections for a native 16D-state/12D-action RoboCasa contract."""
     import torch
@@ -202,6 +284,8 @@ def run_finetune(
         raise ValueError("steps must be positive and image_size must be at least 64")
     if not episode_dirs:
         raise ValueError("at least one episode directory is required")
+    if grad_accum < 1 or batch_size < 1 or warmup_steps < 0:
+        raise ValueError("grad_accum and batch_size must be positive, warmup_steps non-negative")
     if sampling_balance not in {"phase", "action_event"}:
         raise ValueError("sampling_balance must be 'phase' or 'action_event'")
     target_fields = list(target_fields or [])
@@ -210,8 +294,11 @@ def run_finetune(
         raise ValueError("targeted output training requires preserved checkpoint statistics")
     checkpoint = Path(checkpoint).resolve()
     output_dir = Path(output_dir).resolve()
-    episodes = [RoboCasaEpisode(path) for path in episode_dirs]
-    demonstration_records = validate_demonstrations(episodes)
+    dagger_episode_dirs = list(dagger_episode_dirs or [])
+    episodes = [RoboCasaEpisode(path) for path in [*episode_dirs, *dagger_episode_dirs]]
+    demonstration_records = validate_demonstrations(
+        episodes, [False] * len(episode_dirs) + [True] * len(dagger_episode_dirs)
+    )
     tasks = {episode.manifest["task"] for episode in episodes}
     if not tasks or any(not task for task in tasks):
         raise ValueError("all training episodes must have a language task")
@@ -221,38 +308,40 @@ def run_finetune(
     episode_data = []
     all_states, all_actions = [], []
     for episode in episodes:
-        states, actions = load_episode_vectors(episode)
         anchors = available_episode_anchors(
             len(episode), horizon, stride, episode.manifest.get("training_cache")
         )
         if not anchors:
             raise ValueError(f"episode {episode.root} is shorter than the action horizon")
-        episode_data.append((episode, states, actions, anchors))
+        states, actions, rgb = episode_training_arrays(episode, anchors)
+        if geometry_state:
+            states = np.concatenate([states, episode_geometry(episode)], axis=1)
+        episode_data.append((episode, states, actions, anchors, rgb))
         all_states.append(states)
         all_actions.append(actions)
     stats_numpy = dataset_statistics(np.concatenate(all_states), np.concatenate(all_actions))
+    if geometry_state:
+        # Dropout makes the valid flag binary at training time; fix its scale explicitly.
+        state_stats = stats_numpy["observation.state"]
+        state_stats["mean"][19], state_stats["std"][19] = 0.5, 0.5
+        state_stats["min"][19], state_stats["max"][19] = 0.0, 1.0
     stats = {
         key: {name: torch.from_numpy(value) for name, value in values.items()}
         for key, values in stats_numpy.items()
     }
 
     examples = []
-    for episode, states, actions, anchors in episode_data:
-        for anchor in anchors:
-            arrays = episode.frame(anchor)["arrays"]
+    for episode, states, actions, anchors, rgb in episode_data:
+        for row, anchor in enumerate(anchors):
             examples.append(
                 {
                     "observation.state": torch.from_numpy(states[anchor].copy()),
-                    "observation.images.camera1": _image(arrays, episode.manifest["cameras"][0]),
-                    "observation.images.camera2": _image(arrays, episode.manifest["cameras"][1]),
-                    "observation.images.camera3": _image(arrays, episode.manifest["cameras"][2]),
+                    "rgb": (rgb, row),
                     "action": torch.from_numpy(actions[anchor : anchor + horizon].copy()),
                     "task": episode.manifest["task"],
                     "episode": str(episode.root.resolve()),
                     "anchor": anchor,
-                    "phase": episode.manifest["frames"][anchor]
-                    .get("action_source", {})
-                    .get("phase", "unknown"),
+                    "phase": _frame_phase(episode.manifest["frames"][anchor]),
                     "action_event": action_event_label(actions[anchor : anchor + horizon]),
                 }
             )
@@ -266,6 +355,8 @@ def run_finetune(
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
+    state_dimension = 20 if geometry_state else 16
+    geometry_rng = np.random.default_rng(seed + 1)
     config = PreTrainedConfig.from_pretrained(checkpoint)
     config.device = device
     config.load_vlm_weights = False
@@ -274,7 +365,7 @@ def run_finetune(
     config.chunk_size = horizon
     config.n_action_steps = horizon
     config.input_features = {
-        "observation.state": PolicyFeature(FeatureType.STATE, (16,)),
+        "observation.state": PolicyFeature(FeatureType.STATE, (state_dimension,)),
         "observation.images.camera1": PolicyFeature(FeatureType.VISUAL, (3, 96, 96)),
         "observation.images.camera2": PolicyFeature(FeatureType.VISUAL, (3, 96, 96)),
         "observation.images.camera3": PolicyFeature(FeatureType.VISUAL, (3, 96, 96)),
@@ -311,16 +402,40 @@ def run_finetune(
     else:
         preprocess, postprocess = make_pre_post_processors(policy.config, dataset_stats=stats)
 
-    def materialize(example: dict) -> dict:
+    def materialize(example: dict, augment: bool = False) -> dict:
         batch = {
             key: value
             for key, value in example.items()
-            if key not in {"episode", "anchor", "phase", "action_event"}
+            if key not in {"episode", "anchor", "phase", "action_event", "rgb"}
         }
+        rgb, row = example["rgb"]
         for camera_index in range(1, 4):
-            key = f"observation.images.camera{camera_index}"
-            batch[key] = torch.from_numpy(batch[key]).permute(2, 0, 1).float() / 255.0
+            image = np.array(rgb[row, camera_index - 1])
+            batch[f"observation.images.camera{camera_index}"] = (
+                torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+            )
+        if geometry_state and augment:
+            # Imitate memory estimates: position noise, and sometimes no estimate at all.
+            state = batch["observation.state"].clone()
+            if geometry_rng.random() < geometry_dropout:
+                state[16:20] = 0.0
+            else:
+                state[16:19] += torch.from_numpy(
+                    geometry_rng.normal(scale=geometry_noise, size=3).astype(np.float32)
+                )
+            batch["observation.state"] = state
         return batch
+
+    def collate(indices) -> dict:
+        items = [materialize(examples[index], augment=True) for index in indices]
+        if len(items) == 1:
+            return items[0]
+        return {
+            key: [item[key] for item in items]
+            if key == "task"
+            else torch.stack([item[key] for item in items])
+            for key in items[0]
+        }
 
     probe = preprocess(materialize(examples[0]))
     if probe["action"].ndim == 2:
@@ -339,20 +454,35 @@ def run_finetune(
     losses = []
     started = time.perf_counter()
     training_order = phase_balanced_example_order(
-        [example[sampling_balance] for example in examples], steps, seed
+        [example[sampling_balance] for example in examples], steps * grad_accum * batch_size, seed
     )
-    for example_index in training_order:
+    # Linear warmup then cosine decay to 2.5% of the peak rate, as in SmolVLA pretraining.
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lambda step: 1.0
+        if not cosine_schedule
+        else (step + 1) / warmup_steps
+        if step < warmup_steps
+        else 0.025 + 0.975 * 0.5 * (1.0 + np.cos(np.pi * (step - warmup_steps) / max(1, steps - warmup_steps))),
+    )
+    for update in range(steps):
         optimizer.zero_grad(set_to_none=True)
-        batch = preprocess(materialize(examples[example_index]))
-        if batch["action"].ndim == 2:
-            batch["action"] = batch["action"].unsqueeze(0)
-        loss, _ = policy(batch)
-        if not torch.isfinite(loss):
-            raise RuntimeError("non-finite RoboCasa fine-tuning loss")
-        loss.backward()
+        update_loss = 0.0
+        chunk = batch_size * grad_accum
+        update_order = training_order[update * chunk : (update + 1) * chunk]
+        for start in range(0, chunk, batch_size):
+            batch = preprocess(collate(update_order[start : start + batch_size]))
+            if batch["action"].ndim == 2:
+                batch["action"] = batch["action"].unsqueeze(0)
+            loss, _ = policy(batch)
+            if not torch.isfinite(loss):
+                raise RuntimeError("non-finite RoboCasa fine-tuning loss")
+            (loss / grad_accum).backward()
+            update_loss += float(loss.detach().cpu()) / grad_accum
         torch.nn.utils.clip_grad_norm_(parameters, 10.0)
         optimizer.step()
-        losses.append(float(loss.detach().cpu()))
+        scheduler.step()
+        losses.append(update_loss)
     policy.eval()
     with torch.inference_mode():
         probe_loss_after = float(
@@ -412,7 +542,15 @@ def run_finetune(
         "horizon": horizon,
         "stride": stride,
         "steps": steps,
-        "state_dimension": 16,
+        "grad_accum": grad_accum,
+        "batch_size": batch_size,
+        "warmup_steps": warmup_steps,
+        "cosine_schedule": cosine_schedule,
+        "state_dimension": state_dimension,
+        "geometry_state": geometry_state,
+        "geometry_noise": geometry_noise if geometry_state else None,
+        "geometry_dropout": geometry_dropout if geometry_state else None,
+        "dagger_episodes": len(dagger_episode_dirs),
         "action_dimension": 12,
         "action_fields": [
             "end_effector_position[3]",
@@ -470,6 +608,24 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--sampling-balance", choices=("phase", "action_event"), default="phase"
     )
+    parser.add_argument("--grad-accum", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--warmup-steps", type=int, default=0)
+    parser.add_argument("--cosine-schedule", action="store_true")
+    parser.add_argument(
+        "--geometry-state",
+        action="store_true",
+        help="append object-minus-gripper position and a valid flag to the state (20D)",
+    )
+    parser.add_argument("--geometry-noise", type=float, default=0.01)
+    parser.add_argument("--geometry-dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--dagger-episode-dir",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="oracle-labelled rollouts; these may fail the task",
+    )
     args = parser.parse_args(argv)
     result = run_finetune(
         args.checkpoint,
@@ -486,6 +642,14 @@ def main(argv: list[str] | None = None) -> None:
         target_fields=args.target_field,
         preserve_checkpoint_stats=args.preserve_checkpoint_stats,
         sampling_balance=args.sampling_balance,
+        grad_accum=args.grad_accum,
+        batch_size=args.batch_size,
+        warmup_steps=args.warmup_steps,
+        cosine_schedule=args.cosine_schedule,
+        geometry_state=args.geometry_state,
+        geometry_noise=args.geometry_noise,
+        geometry_dropout=args.geometry_dropout,
+        dagger_episode_dirs=args.dagger_episode_dir,
     )
     print(json.dumps(result, indent=2))
 

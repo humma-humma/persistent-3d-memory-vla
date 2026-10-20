@@ -11,7 +11,13 @@ import numpy as np
 from .policy_rpc import receive_message, send_message
 
 
-def serve(checkpoint: str | Path, *, host: str = "127.0.0.1", port: int = 8765) -> None:
+def serve(
+    checkpoint: str | Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    n_action_steps: int | None = None,
+) -> None:
     import torch
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.factory import make_pre_post_processors
@@ -21,6 +27,10 @@ def serve(checkpoint: str | Path, *, host: str = "127.0.0.1", port: int = 8765) 
     config = PreTrainedConfig.from_pretrained(checkpoint)
     config.device = "cuda"
     config.load_vlm_weights = False
+    if n_action_steps is not None:
+        if not 1 <= n_action_steps <= config.chunk_size:
+            raise ValueError(f"n_action_steps must be in [1, {config.chunk_size}]")
+        config.n_action_steps = n_action_steps
     policy = SmolVLAPolicy.from_pretrained(
         checkpoint, config=config, local_files_only=True
     ).to("cuda").eval()
@@ -50,6 +60,9 @@ def serve(checkpoint: str | Path, *, host: str = "127.0.0.1", port: int = 8765) 
                     if command == "reset":
                         if hasattr(policy, "reset"):
                             policy.reset()
+                        if request.get("seed") is not None:
+                            # Flow-matching noise is sampled per chunk; seed it per episode.
+                            torch.manual_seed(int(request["seed"]))
                         send_message(connection, {"ok": True})
                     elif command != "act":
                         send_message(connection, {"error": f"unknown command {command!r}"})
@@ -85,8 +98,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--n-action-steps", type=int, help="actions executed per predicted chunk"
+    )
     args = parser.parse_args(argv)
-    serve(args.checkpoint, host=args.host, port=args.port)
+    serve(
+        args.checkpoint,
+        host=args.host,
+        port=args.port,
+        n_action_steps=args.n_action_steps,
+    )
 
 
 if __name__ == "__main__":
