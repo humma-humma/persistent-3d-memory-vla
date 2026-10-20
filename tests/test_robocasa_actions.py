@@ -92,3 +92,14 @@ def test_grasp_point_moves_only_along_object_long_axis():
     )
 
     assert np.allclose(point, [1.0, 2.08, 0.5])
+
+
+def test_long_axis_frame_picks_widest_horizontal_extent():
+    from persistent_scene_memory.robocasa_actions import _long_axis_frame
+
+    upright = np.eye(3)
+    frame, index = _long_axis_frame(upright, np.array([0.073, 0.052, 0.148]))
+    assert index == 0 and np.allclose(frame[:, 1], [1, 0, 0])
+    lying = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+    frame, index = _long_axis_frame(lying, np.array([0.057, 0.057, 0.159]))
+    assert index == 2 and np.allclose(np.abs(frame[:, 1]), [1, 0, 0])

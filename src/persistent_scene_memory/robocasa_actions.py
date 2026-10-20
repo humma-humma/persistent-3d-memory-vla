@@ -51,16 +51,24 @@ def _grasp_orientation_action(
     current_relative: np.ndarray,
     base_rotation: np.ndarray,
     object_rotation: np.ndarray,
+    sign: float | None = None,
 ) -> tuple[np.ndarray, float]:
-    """Compute the shortest base-frame OSC rotation command for a top-down grasp."""
+    """Compute the base-frame OSC rotation command for a top-down grasp.
+
+    The two symmetric grasps (sign -1 or 1) differ by a half turn; the shorter one is
+    used unless `sign` fixes one (e.g. when the shorter one runs into a wrist limit).
+    """
     current = _quat_xyzw_to_matrix(current_relative)
     candidates = []
-    for sign in (-1.0, 1.0):
-        desired_world = _top_down_grasp_rotation(object_rotation, sign)
+    for candidate_sign in (-1.0, 1.0):
+        desired_world = _top_down_grasp_rotation(object_rotation, candidate_sign)
         desired_relative = base_rotation.T @ desired_world
         rotation_vector = Rotation.from_matrix(desired_relative @ current.T).as_rotvec()
         candidates.append(rotation_vector)
-    rotation_vector = min(candidates, key=np.linalg.norm)
+    if sign is None:
+        rotation_vector = min(candidates, key=np.linalg.norm)
+    else:
+        rotation_vector = candidates[int(sign > 0)]
     return np.clip(rotation_vector / 0.5, -1.0, 1.0).astype(np.float32), float(
         np.linalg.norm(rotation_vector)
     )
@@ -118,6 +126,15 @@ def _nearest_long_axis_grasp_point(
     return object_position + offset * long_axis
 
 
+def _long_axis_frame(object_rotation: np.ndarray, size: np.ndarray) -> tuple[np.ndarray, int]:
+    """Reorder object axes so column 1 is the one with the longest horizontal extent."""
+    object_rotation = np.asarray(object_rotation, dtype=np.float64)
+    extents = np.asarray(size, dtype=np.float64) * np.linalg.norm(object_rotation[:2], axis=0)
+    index = int(np.argmax(extents))
+    order = [axis for axis in range(3) if axis != index]
+    return object_rotation[:, [order[0], index, order[1]]], index
+
+
 class OraclePickPlaceCounterToCabinet:
     """Privileged phase controller for generating pick-place action labels."""
 
@@ -154,6 +171,13 @@ class OraclePickPlaceCounterToCabinet:
         self.cabinet_approach = None
         self.cabinet_base_stage = None
         self.grasp_loss_steps = 0
+        self.grasp_height = 0.0
+        self.descend_best_z = np.inf
+        self.wait_steps = 0
+        self.descend_stall_steps = 0
+        self.grasp_sign = None
+        self.orientation_best = np.inf
+        self.orientation_stall_steps = 0
         self.align_for_cabinet = None
         self.last_info = {}
 
@@ -173,8 +197,11 @@ class OraclePickPlaceCounterToCabinet:
         points = np.asarray(points, dtype=np.float64)
         center = points.mean(axis=0)
         nearest = points[np.argmin(np.linalg.norm(points[:, :2] - self.initial_object_position[:2], axis=1))]
+        # Tall objects are grasped near the top; carry and place them at matching height.
+        half_height = 0.5 * float(np.asarray(getattr(obj, "size", (0.0, 0.0, 0.0)))[2])
+        self.grasp_height = max(0.0, half_height - 0.03)
         place = nearest + 0.40 * (center - nearest)
-        place[2] = points[:, 2].min() + 0.10
+        place[2] = points[:, 2].min() + max(0.10, half_height + 0.03 + self.grasp_height)
         outward = self.initial_object_position[:2] - place[:2]
         outward /= max(np.linalg.norm(outward), 1e-8)
         self.place_position = place
@@ -206,12 +233,42 @@ class OraclePickPlaceCounterToCabinet:
             task.sim.data.body_xmat[task.obj_body_id[obj.name]], dtype=np.float64
         ).reshape(3, 3)
         base_rotation = _quat_xyzw_to_matrix(observation["state.base_rotation"])
+        # Close across the narrow horizontal side of the object as it currently lies.
+        size = np.asarray(getattr(obj, "size", (0.0, 0.16, 0.0)), dtype=np.float64)
+        grasp_frame, long_index = _long_axis_frame(object_rotation, size)
         grasp_rotation_action, grasp_orientation_error = _grasp_orientation_action(
             observation["state.end_effector_rotation_relative"],
             base_rotation,
-            object_rotation,
+            grasp_frame,
+            self.grasp_sign,
         )
-        grasp_point = _nearest_long_axis_grasp_point(obj_pos, object_rotation, eef)
+        if self.phase == "approach_object":
+            # A wrist pushed near its limit (e.g. by a learned policy) can stall the
+            # shorter rotation; after 20 steps without progress try the other grasp.
+            if grasp_orientation_error < self.orientation_best - 0.01:
+                self.orientation_best = grasp_orientation_error
+                self.orientation_stall_steps = 0
+            elif grasp_orientation_error > self.grasp_orientation_tolerance:
+                self.orientation_stall_steps += 1
+                if self.orientation_stall_steps >= 20:
+                    # Lock onto the grasp opposite to the one currently pursued.
+                    _, error_minus = _grasp_orientation_action(
+                        observation["state.end_effector_rotation_relative"],
+                        base_rotation, grasp_frame, -1.0,
+                    )
+                    current_sign = -1.0 if abs(error_minus - grasp_orientation_error) < 1e-9 else 1.0
+                    self.grasp_sign = -current_sign
+                    self.orientation_best = np.inf
+                    self.orientation_stall_steps = 0
+        # Slide along the long axis only within the object; compact objects grasp at center.
+        half_length = 0.5 * float(size[long_index])
+        grasp_point = _nearest_long_axis_grasp_point(
+            obj_pos, grasp_frame, eef, max_offset=float(np.clip(half_length - 0.03, 0.0, 0.08))
+        )
+        # Grasp tall objects near their current top rather than at mid-height.
+        half_height = 0.5 * float(np.abs(object_rotation[2]) @ size)
+        if self.phase_index <= 1:
+            self.grasp_height = max(0.0, half_height - 0.03)
         grasped_now = bool(
             task._check_grasp(task.robots[0].gripper["right"], task.objects["obj"])
         )
@@ -223,9 +280,24 @@ class OraclePickPlaceCounterToCabinet:
         while True:
             phase = self.phase
             if phase == "approach_object":
-                target, tolerance = grasp_point + [0, 0, 0.14], 0.06
+                target, tolerance = grasp_point + [0, 0, self.grasp_height + 0.14], 0.06
             elif phase == "descend_to_object":
-                target, tolerance = grasp_point + [0, 0, 0.008], 0.012
+                target, tolerance = grasp_point + [0, 0, self.grasp_height + 0.008], 0.012
+                # Fingertips can bottom out on the counter above a short object's grasp point.
+                if self.phase_steps == 0:
+                    self.descend_best_z, self.descend_stall_steps = np.inf, 0
+                if eef[2] < self.descend_best_z - 0.002:
+                    self.descend_best_z = float(eef[2])
+                    self.descend_stall_steps = 0
+                else:
+                    self.descend_stall_steps += 1
+                if (
+                    self.descend_stall_steps >= 15
+                    and np.linalg.norm((target - eef)[:2]) <= 0.02
+                ):
+                    self._advance()
+                    gripper_close = 1.0
+                    continue
             elif phase == "close_gripper":
                 target, tolerance = eef, 0.0
                 if self.phase_steps >= 12:
@@ -256,6 +328,17 @@ class OraclePickPlaceCounterToCabinet:
                     if obj_pos[2] > self.initial_object_position[2] + 0.05:
                         phase = "wait_for_object"
                         target, tolerance = eef, 0.0
+                        self.wait_steps += 1
+                        if self.wait_steps >= 20:
+                            # A dropped object at rest: retreat if it landed inside, else regrasp.
+                            from robocasa.utils import object_utils as OU
+
+                            inside = OU.obj_inside_of(task, "obj", task.cab)
+                            self.phase_index = self.phases.index("retreat") if inside else 0
+                            self.phase_steps = 0
+                            self.wait_steps = 0
+                            self.grasp_loss_steps = 0
+                            continue
                     else:
                         self.phase_index = 0
                         self.phase_steps = 0
@@ -265,7 +348,10 @@ class OraclePickPlaceCounterToCabinet:
             elif phase == "insert_object":
                 from robocasa.utils import object_utils as OU
 
-                if OU.obj_inside_of(task, "obj", task.cab):
+                if (
+                    OU.obj_inside_of(task, "obj", task.cab)
+                    and np.linalg.norm(self.place_position - eef) <= 0.08
+                ):
                     self._advance()
                     gripper_close = 0.0
                     continue
@@ -275,6 +361,17 @@ class OraclePickPlaceCounterToCabinet:
                     if obj_pos[2] > self.initial_object_position[2] + 0.05:
                         phase = "wait_for_object"
                         target, tolerance = eef, 0.0
+                        self.wait_steps += 1
+                        if self.wait_steps >= 20:
+                            # A dropped object at rest: retreat if it landed inside, else regrasp.
+                            from robocasa.utils import object_utils as OU
+
+                            inside = OU.obj_inside_of(task, "obj", task.cab)
+                            self.phase_index = self.phases.index("retreat") if inside else 0
+                            self.phase_steps = 0
+                            self.wait_steps = 0
+                            self.grasp_loss_steps = 0
+                            continue
                     else:
                         self.phase_index = 0
                         self.phase_steps = 0
