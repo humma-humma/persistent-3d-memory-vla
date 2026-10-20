@@ -26,6 +26,7 @@ class _PendingChange:
     feature: np.ndarray
     confidence: float
     frames: set[int]
+    views: set[str]
 
 
 class ConsistencyGatedMemory:
@@ -38,13 +39,18 @@ class ConsistencyGatedMemory:
         change_threshold: float = 0.25,
         confirmation_views: int = 2,
         candidate_threshold: float | None = None,
+        evidence: str = "frames",
     ):
         if confirmation_views < 2:
             raise ValueError("confirmation_views must be at least two")
+        if evidence not in {"frames", "views"}:
+            raise ValueError("evidence must be 'frames' or 'views'")
         if candidate_threshold is not None and candidate_threshold <= 0.0:
             raise ValueError("candidate_threshold must be positive")
         self.change_threshold = float(change_threshold)
         self.confirmation_views = int(confirmation_views)
+        # "views" counts distinct sensors, so one camera repeating an error cannot confirm it.
+        self.evidence = evidence
         self.candidate_threshold = float(candidate_threshold or change_threshold)
         self.memory = PersistentSceneMemory(
             confidence_decay=confidence_decay,
@@ -52,7 +58,10 @@ class ConsistencyGatedMemory:
         )
         self._pending: dict[str, _PendingChange] = {}
 
-    def update(self, observation: GeometryObservation) -> UpdateDecision:
+    def _evidence(self, pending: _PendingChange) -> int:
+        return len(pending.views if self.evidence == "views" else pending.frames)
+
+    def update(self, observation: GeometryObservation, view: str | None = None) -> UpdateDecision:
         previous = self.memory.token(observation.key, observation.frame_index)
         if previous is None:
             token = self.memory.replace(observation)
@@ -71,16 +80,22 @@ class ConsistencyGatedMemory:
                 observation.feature.copy(),
                 observation.confidence,
                 {observation.frame_index},
+                {str(view)},
             )
             self._pending[observation.key] = pending
-        elif observation.frame_index not in pending.frames:
-            weight = len(pending.frames)
+        elif (
+            str(view) not in pending.views
+            if self.evidence == "views"
+            else observation.frame_index not in pending.frames
+        ):
+            weight = self._evidence(pending)
             pending.position = (weight * pending.position + observation.position) / (weight + 1)
             pending.feature = (weight * pending.feature + observation.feature) / (weight + 1)
             pending.confidence = max(pending.confidence, observation.confidence)
             pending.frames.add(observation.frame_index)
+            pending.views.add(str(view))
 
-        evidence = len(pending.frames)
+        evidence = self._evidence(pending)
         if evidence < self.confirmation_views:
             return UpdateDecision(observation.key, "uncertain", evidence, residual, previous)
 
@@ -117,7 +132,7 @@ class ConsistencyGatedMemory:
                 f"{key}?candidate",
                 pending.position.copy(),
                 np.concatenate([pending.feature, [1.0]]),
-                pending.confidence * len(pending.frames) / self.confirmation_views,
+                pending.confidence * self._evidence(pending) / self.confirmation_views,
                 max(pending.frames),
             )
             for key, pending in sorted(self._pending.items())
@@ -131,7 +146,7 @@ class ConsistencyGatedMemory:
                 "key": key,
                 "position": pending.position.tolist(),
                 "confidence": pending.confidence,
-                "evidence_views": len(pending.frames),
+                "evidence_views": self._evidence(pending),
             }
             for key, pending in sorted(self._pending.items())
         ]

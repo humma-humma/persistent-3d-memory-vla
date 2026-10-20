@@ -122,3 +122,18 @@ def test_policy_tokens_expose_uncertain_candidate_separately():
     assert [token.key for token in tokens] == ["cup", "cup?candidate"]
     assert tokens[0].feature.tolist() == [1, 0, 0]
     assert tokens[1].feature.tolist() == [0, 1, 1]
+
+
+def test_consistency_gate_view_evidence_requires_distinct_cameras():
+    from persistent_scene_memory.consistency_memory import ConsistencyGatedMemory
+    from persistent_scene_memory.memory import GeometryObservation
+
+    def obs(x, frame):
+        return GeometryObservation("obj", np.array([x, 0.0, 0.0]), np.zeros(1), 0.9, frame)
+
+    memory = ConsistencyGatedMemory(change_threshold=0.1, evidence="views")
+    memory.update(obs(0.0, 0), view="left")
+    assert memory.update(obs(1.0, 1), view="left").state == "uncertain"
+    assert memory.update(obs(1.0, 2), view="left").state == "uncertain"
+    decision = memory.update(obs(1.0, 2), view="right")
+    assert decision.state == "update" and np.allclose(decision.token.position, [1.0, 0, 0])
