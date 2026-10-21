@@ -152,15 +152,6 @@ simulator assets. See:
 - [Causal mapping validation](docs/CAUSAL_MAPPING_VALIDATION.md)
 - [Reproducibility guide](docs/REPRODUCIBILITY.md)
 
-## Visual examples
-
-| Boot reconstruction | Milk reconstruction |
-|---|---|
-| ![Boot reconstruction](assets/demo/boot_dense_open3d.png) | ![Milk reconstruction](assets/demo/milk_dense_open3d.png) |
-
-Interactive viewers support camera trajectories, confidence coloring, and
-per-frame current-versus-persisted memory inspection.
-
 ## Research status
 
 The controlled experiments support confidence-aware persistence. The project
